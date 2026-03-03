@@ -1484,4 +1484,261 @@ export class TodoistTaskSync {
             );
         }
     }
+
+    /**
+     * Scan the entire document for inline todo markers ((content))
+     * and create Todoist tasks for each, replacing with [☑︎content](todoist_url).
+     * Back-link uses search=v2Id to locate the exact line — no block ID needed.
+     */
+    async scanInlineTodos(editor: Editor) {
+        if (!this.todoistApi) {
+            new Notice("Please set up your Todoist API token in settings");
+            return;
+        }
+
+        // Persistent progress notice (timeout=0 keeps it visible)
+        const progressNotice = new Notice("Scanning for inline todos...", 0);
+
+        // Scan all lines for ((content)) matches
+        const inlineTodoPattern = /\(\((.+?)\)\)/g;
+        type InlineMatch = { ch: number; length: number; content: string };
+        const lineMatches: { line: number; matches: InlineMatch[] }[] = [];
+
+        for (let i = 0; i < editor.lineCount(); i++) {
+            const lineText = editor.getLine(i);
+            const matches: InlineMatch[] = [];
+            inlineTodoPattern.lastIndex = 0;
+            let m: RegExpExecArray | null;
+            while ((m = inlineTodoPattern.exec(lineText)) !== null) {
+                matches.push({
+                    ch: m.index,
+                    length: m[0].length,
+                    content: m[1],
+                });
+            }
+            if (matches.length > 0) {
+                lineMatches.push({ line: i, matches });
+            }
+        }
+
+        const totalCount = lineMatches.reduce(
+            (sum, lm) => sum + lm.matches.length,
+            0,
+        );
+
+        if (totalCount === 0) {
+            progressNotice.hide();
+            this.notificationHelper.showInfo("No inline todos found.");
+            return;
+        }
+
+        progressNotice.setMessage(
+            `Found ${totalCount} inline todos. Creating tasks...`,
+        );
+
+        // Build file-level URI base (vault + filepath/uid) once
+        const file = this.app.workspace.getActiveFile();
+        const vaultName = this.app.vault.getName();
+
+        let successCount = 0;
+        let failCount = 0;
+
+        // Process bottom-to-top (lines), right-to-left (within line)
+        for (let li = lineMatches.length - 1; li >= 0; li--) {
+            const { line, matches } = lineMatches[li];
+
+            for (let mi = matches.length - 1; mi >= 0; mi--) {
+                const { ch, length, content } = matches[mi];
+                const current = successCount + failCount + 1;
+
+                progressNotice.setMessage(
+                    `Creating tasks... (${current}/${totalCount}) "${content}"`,
+                );
+
+                try {
+                    // Step 1: Create task with empty description
+                    const taskId = await this.createTodoistTask(
+                        content,
+                        "",
+                        null,
+                        String(this.settings.todoistDefaultPriority),
+                        this.settings.todoistDefaultProject,
+                    );
+
+                    const v2Id = await this.todoistV2IDs.getV2Id(taskId);
+                    const taskUrl = `https://app.todoist.com/app/task/${v2Id}`;
+
+                    // Step 2: Build back-link URI using search=v2Id
+                    if (file) {
+                        const params = new URLSearchParams();
+                        params.set("vault", vaultName);
+                        params.set("filepath", file.path);
+                        params.set("search", v2Id);
+                        const queryString = params
+                            .toString()
+                            .replace(/\+/g, "%20");
+                        const backLinkUri = `obsidian://adv-uri?${queryString}`;
+
+                        const timestamp = window
+                            .moment()
+                            .format(this.settings.timestampFormat);
+                        const description =
+                            TODOIST_CONSTANTS.FORMAT_STRINGS.REFERENCE(
+                                backLinkUri,
+                                timestamp,
+                                this.settings.useMdLinkFormat,
+                            );
+
+                        // Step 3: Update task with back-link description
+                        await this.todoistApi!.updateTask(taskId, {
+                            description,
+                        });
+                    }
+
+                    // Step 4: Replace ((content)) in editor
+                    const replacement = `[☑︎${content}](${taskUrl})`;
+                    editor.replaceRange(
+                        replacement,
+                        { line, ch },
+                        { line, ch: ch + length },
+                    );
+
+                    successCount++;
+                } catch (error) {
+                    console.error(
+                        `Failed to create Todoist task for "${content}":`,
+                        error,
+                    );
+                    failCount++;
+                }
+            }
+        }
+
+        progressNotice.hide();
+
+        if (failCount === 0) {
+            this.notificationHelper.showSuccess(
+                `Created ${successCount} Todoist tasks from inline todos.`,
+            );
+        } else {
+            this.notificationHelper.showError(
+                `Created ${successCount}, failed ${failCount} inline todos.`,
+            );
+        }
+    }
+
+    /**
+     * Refresh inline todo links: fetch completion status from Todoist
+     * and add strikethrough for completed tasks.
+     * Matches [☑︎content](todoist_url), skips [☑︎~~content~~](todoist_url).
+     */
+    async refreshInlineTodoStatus(editor: Editor) {
+        if (!this.todoistApi) {
+            new Notice("Please set up your Todoist API token in settings");
+            return;
+        }
+
+        const progressNotice = new Notice(
+            "Scanning for inline todo links...",
+            0,
+        );
+
+        // Match active inline todos, skip already strikethrough ones
+        const activePattern =
+            /\[☑︎(?!~~)(.+?)\]\(https:\/\/app\.todoist\.com\/app\/task\/([\w-]+)\)/g;
+        type InlineLink = {
+            ch: number;
+            length: number;
+            content: string;
+            taskId: string;
+        };
+        const lineMatches: { line: number; matches: InlineLink[] }[] = [];
+
+        for (let i = 0; i < editor.lineCount(); i++) {
+            const lineText = editor.getLine(i);
+            const matches: InlineLink[] = [];
+            activePattern.lastIndex = 0;
+            let m: RegExpExecArray | null;
+            while ((m = activePattern.exec(lineText)) !== null) {
+                matches.push({
+                    ch: m.index,
+                    length: m[0].length,
+                    content: m[1],
+                    taskId: m[2],
+                });
+            }
+            if (matches.length > 0) {
+                lineMatches.push({ line: i, matches });
+            }
+        }
+
+        const totalCount = lineMatches.reduce(
+            (sum, lm) => sum + lm.matches.length,
+            0,
+        );
+
+        if (totalCount === 0) {
+            progressNotice.hide();
+            this.notificationHelper.showInfo(
+                "No active inline todo links found.",
+            );
+            return;
+        }
+
+        progressNotice.setMessage(
+            `Found ${totalCount} inline todos. Checking status...`,
+        );
+
+        let completedCount = 0;
+        let failCount = 0;
+
+        // Process bottom-to-top, right-to-left
+        for (let li = lineMatches.length - 1; li >= 0; li--) {
+            const { line, matches } = lineMatches[li];
+
+            for (let mi = matches.length - 1; mi >= 0; mi--) {
+                const { ch, length, content, taskId } = matches[mi];
+                const current = completedCount + failCount + 1;
+
+                progressNotice.setMessage(
+                    `Checking status... (${current}/${totalCount}) "${content}"`,
+                );
+
+                try {
+                    const task = await this.todoistApi!.getTask(taskId);
+                    const isCompleted = !!task.completedAt;
+
+                    if (isCompleted) {
+                        const replacement = `[☑︎~~${content}~~](https://app.todoist.com/app/task/${taskId})`;
+                        editor.replaceRange(
+                            replacement,
+                            { line, ch },
+                            { line, ch: ch + length },
+                        );
+                        completedCount++;
+                    }
+                } catch (error) {
+                    console.error(
+                        `Failed to fetch status for task "${content}":`,
+                        error,
+                    );
+                    failCount++;
+                }
+            }
+        }
+
+        progressNotice.hide();
+
+        if (failCount === 0) {
+            this.notificationHelper.showSuccess(
+                completedCount > 0
+                    ? `Updated ${completedCount} completed tasks.`
+                    : "All inline todos are still active.",
+            );
+        } else {
+            this.notificationHelper.showError(
+                `Updated ${completedCount}, failed to check ${failCount} tasks.`,
+            );
+        }
+    }
 }

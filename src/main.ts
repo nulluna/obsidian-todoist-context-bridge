@@ -166,6 +166,36 @@ export default class TodoistContextBridgePlugin extends Plugin {
                 );
             },
         });
+
+        // Add command to scan inline todos and create Todoist tasks
+        this.addCommand({
+            id: "scan-inline-todo",
+            name: "Scan inline todos and create Todoist tasks",
+            editorCallback: async (editor: Editor) => {
+                if (!this.todoistApi || !this.TodoistTaskSync) {
+                    new Notice(
+                        "Please configure your Todoist API token in settings first",
+                    );
+                    return;
+                }
+                await this.TodoistTaskSync.scanInlineTodos(editor);
+            },
+        });
+
+        // Add command to refresh inline todo completion status from Todoist
+        this.addCommand({
+            id: "refresh-inline-todo-status",
+            name: "Refresh inline todo completion status",
+            editorCallback: async (editor: Editor) => {
+                if (!this.todoistApi || !this.TodoistTaskSync) {
+                    new Notice(
+                        "Please configure your Todoist API token in settings first",
+                    );
+                    return;
+                }
+                await this.TodoistTaskSync.refreshInlineTodoStatus(editor);
+            },
+        });
     }
 
     async loadSettings() {
