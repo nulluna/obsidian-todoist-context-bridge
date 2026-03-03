@@ -1487,7 +1487,7 @@ export class TodoistTaskSync {
 
     /**
      * Scan the entire document for inline todo markers ((content))
-     * and create Todoist tasks for each, replacing with [☑︎content](todoist_url).
+     * and create Todoist tasks for each, replacing with [☑︎ content](todoist_url).
      * Back-link uses search=v2Id to locate the exact line — no block ID needed.
      */
     async scanInlineTodos(editor: Editor) {
@@ -1596,7 +1596,7 @@ export class TodoistTaskSync {
                     }
 
                     // Step 4: Replace ((content)) in editor
-                    const replacement = `[☑︎${content}](${taskUrl})`;
+                    const replacement = `[☑︎ ${content}](${taskUrl})`;
                     editor.replaceRange(
                         replacement,
                         { line, ch },
@@ -1630,7 +1630,7 @@ export class TodoistTaskSync {
     /**
      * Refresh inline todo links: fetch completion status from Todoist
      * and add strikethrough for completed tasks.
-     * Matches [☑︎content](todoist_url), skips [☑︎~~content~~](todoist_url).
+     * Matches [☑︎ content](todoist_url), skips [☑︎ ~~content~~](todoist_url).
      */
     async refreshInlineTodoStatus(editor: Editor) {
         if (!this.todoistApi) {
@@ -1645,7 +1645,7 @@ export class TodoistTaskSync {
 
         // Match active inline todos, skip already strikethrough ones
         const activePattern =
-            /\[☑︎(?!~~)(.+?)\]\(https:\/\/app\.todoist\.com\/app\/task\/([\w-]+)\)/g;
+            /\[☑︎ (?!~~)(.+?)\]\(https:\/\/app\.todoist\.com\/app\/task\/([\w-]+)\)/g;
         type InlineLink = {
             ch: number;
             length: number;
@@ -1709,7 +1709,7 @@ export class TodoistTaskSync {
                     const isCompleted = !!task.completedAt;
 
                     if (isCompleted) {
-                        const replacement = `[☑︎~~${content}~~](https://app.todoist.com/app/task/${taskId})`;
+                        const replacement = `[☑︎ ~~${content}~~](https://app.todoist.com/app/task/${taskId})`;
                         editor.replaceRange(
                             replacement,
                             { line, ch },
